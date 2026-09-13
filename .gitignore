@@ -1,0 +1,19 @@
+# 产物（服务端运行时生成，不入库）
+out/
+nodes.json
+nodes.txt
+sub_base64.txt
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store

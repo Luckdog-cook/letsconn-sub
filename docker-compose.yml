@@ -1,0 +1,12 @@
+services:
+  letsconn:
+    build: .
+    image: letsconn:latest
+    container_name: letsconn
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./out:/app/out
+    environment:
+      - TZ=Asia/Shanghai
