@@ -1,8 +1,8 @@
 services:
-  letsconn:
+  netsub:
     build: .
-    image: letsconn:latest
-    container_name: letsconn
+    image: netsub:latest
+    container_name: netsub
     restart: unless-stopped
     ports:
       - "8787:8787"

@@ -1,18 +1,18 @@
 [Unit]
-Description=letsconn VLESS node subscription service
+Description=netsub PROXY node subscription service
 Documentation=https://github.com/
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/letsconn
-ExecStart=/usr/bin/python3 /opt/letsconn/letsconn_server.py --interval 240 --port 8787
+WorkingDirectory=/opt/netsub
+ExecStart=/usr/bin/python3 /opt/netsub/netsub_server.py --interval 240 --port 8787
 Restart=always
 RestartSec=20
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=letsconn
+SyslogIdentifier=netsub
 
 # 安全加固（可选，按需开启）
 NoNewPrivileges=true

@@ -1,27 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-letsconn 订阅服务端 (Server Edition)
+netsub 分发服务端 (Server Edition)
 =====================================
 
-在服务器上常驻运行，定时自动提取 vless 节点，对外暴露**固定订阅地址**。
+在服务器上常驻运行，定时自动提取 proxy 条目，对外暴露**固定分发地址**。
 
 用法
 ----
-    python letsconn_server.py                  # 默认：每 4 分钟刷新，端口 8787
-    python letsconn_server.py --interval 240   # 自定义间隔（秒）
-    python letsconn_server.py --port 8080
-    python letsconn_server.py --once           # 只跑一次不常驻
+    python netsub_server.py                  # 默认：每 4 分钟刷新，端口 8787
+    python netsub_server.py --interval 240   # 自定义间隔（秒）
+    python netsub_server.py --port 8080
+    python netsub_server.py --once           # 只跑一次不常驻
 
-固定订阅地址
+固定分发地址
 ------------
-    http://<服务器IP>:8787/sub        明文 vless 链接
-    http://<服务器IP>:8787/sub64      base64 订阅（v2rayNG/NekoBox/Clash 通用）
+    http://<服务器IP>:8787/sub        明文 proxy 链接
+    http://<服务器IP>:8787/sub64      base64 配置源（客户端A/客户端B/客户端D 通用）
     http://<服务器IP>:8787/health     健康检查
     http://<服务器IP>:8787/status     状态 JSON
 
 设计要点
 --------
-* **永不返回空订阅**：刷新失败时保留上一次的节点，客户端不会掉线
+* **永不返回空配置源**：刷新失败时保留上一次的条目，客户端不会掉线
 * 单线程刷新 + 线程锁，避免并发重复注册触发风控
 * 刷新间隔默认 240s（试用期 299s，留缓冲）
 * 零第三方依赖，Python 3.6+
@@ -39,13 +39,13 @@ import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from letsconn_mobile import LetsConn, b64sub, log, VERBOSE  # noqa: E402
+from netsub_client import NetSub, b64sub, log, VERBOSE  # noqa: E402
 
 # ══════════════════════════════════════════════════════════════
 #  全局状态（被 HTTP 线程与刷新线程共享）
 # ══════════════════════════════════════════════════════════════
 STATE = {
-    "nodes_txt": "",      # 当前有效的节点明文
+    "nodes_txt": "",      # 当前有效的条目明文
     "count": 0,
     "last_ok": 0,         # 上次成功刷新时间戳
     "last_try": 0,        # 上次尝试时间戳
@@ -72,16 +72,16 @@ def rand_pwd(n=10):
 
 
 # ══════════════════════════════════════════════════════════════
-#  核心：抓一次节点
+#  核心：抓一次条目
 # ══════════════════════════════════════════════════════════════
 def fetch_nodes(exe=1, areas=None, mirror=None, timeout_retry=3):
     """
-    跑完整流程拿节点。返回 (txt, count, err)
+    跑完整流程拿条目。返回 (txt, count, err)
     失败时 txt 为空字符串。
     """
     for attempt in range(timeout_retry):
         try:
-            c = LetsConn(mirror=mirror, device_id=new_device_id())
+            c = NetSub(mirror=mirror, device_id=new_device_id())
 
             # init
             r = c.init()
@@ -137,11 +137,11 @@ def fetch_nodes(exe=1, areas=None, mirror=None, timeout_retry=3):
                     rr, _ = c.rpc("allocate", {"area": str(code)})
                     if isinstance(rr, dict) and rr.get("result") == 200:
                         n = rr["data"]
-                        u = c.vless(n, name="%s#%d" % (nm, k + 1) if exe > 1 else nm)
+                        u = c.proxy(n, name="%s#%d" % (nm, k + 1) if exe > 1 else nm)
                         if u in seen:
                             continue
                         seen.add(u)
-                        nodes.append({"area": code, "name": nm, "node": n, "vless": u})
+                        nodes.append({"area": code, "name": nm, "node": n, "proxy": u})
                     else:
                         break
                     if exe > 1:
@@ -149,12 +149,12 @@ def fetch_nodes(exe=1, areas=None, mirror=None, timeout_retry=3):
                 time.sleep(0.25)
 
             if not nodes:
-                log("[!] 未抽到节点")
+                log("[!] 未抽到条目")
                 time.sleep(3)
                 continue
 
-            txt = "\n".join(n["vless"] for n in nodes) + "\n"
-            log("[+] 抓取成功: %d 个节点 (账号 %s)" % (len(nodes), c.account))
+            txt = "\n".join(n["proxy"] for n in nodes) + "\n"
+            log("[+] 抓取成功: %d 个条目 (账号 %s)" % (len(nodes), c.account))
             return txt, len(nodes), "", c.account
 
         except Exception as e:
@@ -168,7 +168,7 @@ def fetch_nodes(exe=1, areas=None, mirror=None, timeout_retry=3):
 #  刷新线程
 # ══════════════════════════════════════════════════════════════
 def refresher(interval, exe, areas, mirror, outdir):
-    """常驻循环：定时刷新订阅内容"""
+    """常驻循环：定时刷新配置源内容"""
     while True:
         with LOCK:
             STATE["last_try"] = int(time.time())
@@ -195,16 +195,16 @@ def refresher(interval, exe, areas, mirror, outdir):
                 STATE["fails"] += 1
                 STATE["last_err"] = err
                 if STATE["nodes_txt"]:
-                    log("[~] 本次失败，继续沿用旧节点（%d 个）" % STATE["count"])
+                    log("[~] 本次失败，继续沿用旧条目（%d 个）" % STATE["count"])
                 else:
-                    log("[!] 本次失败且无可用旧节点")
+                    log("[!] 本次失败且无可用旧条目")
 
         # 等到下一个周期
         time.sleep(interval)
 
 
 # ══════════════════════════════════════════════════════════════
-#  HTTP 订阅服务
+#  HTTP 分发服务
 # ══════════════════════════════════════════════════════════════
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -219,7 +219,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        # 订阅客户端据此自动重拉
+        # 配置源客户端据此自动重拉
         self.send_header("Profile-Update-Interval", "6")
         self.send_header("Cache-Control", "no-store")
         for k, v in (extra or {}).items():
@@ -320,7 +320,7 @@ def main():
 
     log("")
     log("=" * 62)
-    log("  letsconn 订阅服务端")
+    log("  netsub 分发服务端")
     log("=" * 62)
     log("  刷新间隔 : %d 秒" % o["interval"])
     log("  监听端口 : %d" % o["port"])
@@ -338,7 +338,7 @@ def main():
             f.write(txt)
         with open(os.path.join(outdir, "sub_base64.txt"), "w", encoding="utf-8") as f:
             f.write(b64sub(txt))
-        log("[+] 完成 %d 个节点 → %s" % (cnt, outdir))
+        log("[+] 完成 %d 个条目 → %s" % (cnt, outdir))
         return 0
 
     # 首次同步抓一次（避免客户端一开始拿到 503）
@@ -351,7 +351,7 @@ def main():
             STATE["last_ok"] = int(time.time())
             STATE["runs"] = 1
             STATE["account"] = acct
-        log("[+] 首次成功: %d 个节点" % cnt)
+        log("[+] 首次成功: %d 个条目" % cnt)
     else:
         log("[!] 首次失败 (%s)，服务仍会启动并自动重试" % err)
 
@@ -364,13 +364,13 @@ def main():
     ip = local_ip()
     log("")
     log("=" * 62)
-    log("  ✅ 订阅服务已启动 —— 固定订阅地址")
+    log("  ✅ 分发服务已启动 —— 固定分发地址")
     log("=" * 62)
-    log("    http://%s:%d/sub64      ← v2rayNG / NekoBox / Clash" % (ip, o["port"]))
+    log("    http://%s:%d/sub64      ← 客户端A / 客户端B / 客户端D" % (ip, o["port"]))
     log("    http://%s:%d/sub        ← 明文链接" % (ip, o["port"]))
     log("    http://%s:%d/status     ← 状态 JSON" % (ip, o["port"]))
     log("")
-    log("  手机端只需订阅一次，之后自动更新，永久不用改。")
+    log("  手机端只需配置源一次，之后自动更新，永久不用改。")
     log("  按 Ctrl+C 停止。")
     log("=" * 62)
 

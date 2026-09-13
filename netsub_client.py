@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-letsconn 节点提取器 —— 单文件 / 零第三方依赖 / 手机可直接跑
+netsub 条目提取器 —— 单文件 / 零第三方依赖 / 手机可直接跑
 =========================================================
 支持：Windows / Linux / Termux(Android) / macOS，Python 3.6+
 
 用法：
-  python letsconn_mobile.py                      # 自动注册 + 拉全部节点 + 输出订阅
-  python letsconn_mobile.py 账号 密码             # 用已有账号
-  python letsconn_mobile.py --exe 10             # 每个地区多抽 10 个 UUID（默认 1）
-  python letsconn_mobile.py --areas HK,TW-01     # 只拉指定地区
-  python letsconn_mobile.py --serve              # 启动本地订阅服务器（手机同 WiFi 直接订阅）
-  python letsconn_mobile.py --out /sdcard/Download   # 指定输出目录
+  python netsub_client.py                      # 自动注册 + 拉全部条目 + 输出配置源
+  python netsub_client.py 账号 密码             # 用已有账号
+  python netsub_client.py --exe 10             # 每个地区多抽 10 个 UUID（默认 1）
+  python netsub_client.py --areas HK,TW-01     # 只拉指定地区
+  python netsub_client.py --serve              # 启动本地分发服务器（手机同 WiFi 直接配置源）
+  python netsub_client.py --out /sdcard/Download   # 指定输出目录
 
 输出：
   nodes.txt        换行分隔的 vless:// 链接（可直接粘贴导入）
-  sub_base64.txt   base64 订阅内容（客户端「从剪贴板导入」/「订阅地址」用）
-  sub.html         订阅网页（--serve 时提供）
-  nodes.json       完整数据（账号/节点/原始字段）
+  sub_base64.txt   base64 配置源内容（客户端「从剪贴板导入」/「分发地址」用）
+  sub.html         配置源网页（--serve 时提供）
+  nodes.json       完整数据（账号/条目/原始字段）
 """
 import os, sys, json, time, random, uuid, base64, hashlib, socket, ssl, gzip, io
 import threading
@@ -34,11 +34,11 @@ except ImportError:                                  # pragma: no cover
 # ══════════════════════════════════════════════════════════════
 #  常量
 # ══════════════════════════════════════════════════════════════
-MIRRORS = ["apis.letsapis.com", "apis.letsconn.com", "letswebcn.x1y2.xyz",
+MIRRORS = ["apis.letsapis.com", "apis.netsub.com", "letswebcn.x1y2.xyz",
            "webcn.letsa1b2.com", "apis.letsapi.xyz", "letswebcn.a1b2.pro"]
 VER         = 103          # 请求侧密钥 & 明文头标签
 RESP_K      = 178          # 响应侧密钥
-PKG         = "com.letsconn.android.guanwang"
+PKG         = "com.netsub.android.guanwang"
 UA          = "okhttp/4.9.3"
 DEF_DEVICE  = "3690A9BC-392E-478D-93F8-6CA575B71BCA"   # 默认 deviceId（改成自己的会更好）
 
@@ -146,7 +146,7 @@ def _maybe_gunzip(raw, enc):
 # ══════════════════════════════════════════════════════════════
 #  客户端
 # ══════════════════════════════════════════════════════════════
-class LetsConn(object):
+class NetSub(object):
     def __init__(self, mirror=None, device_id=None, timeout=20):
         self.mirrors    = ([mirror] if mirror else []) + [m for m in MIRRORS if m != mirror]
         self.base       = None
@@ -253,7 +253,7 @@ class LetsConn(object):
         r, _ = self.rpc("allocate", {"area": str(area_code)})
         return r
 
-    def vless(self, node_obj, name=None):
+    def proxy(self, node_obj, name=None):
         pc = node_obj.get("protocolConfig", {}) or {}
         q = {}
         ws = pc.get("ws") or pc.get("wsPath") or pc.get("ws-path")
@@ -293,7 +293,7 @@ def default_outdir():
     """手机优先 /sdcard/Download，其次脚本所在目录"""
     for p in ("/sdcard/Download", "/storage/emulated/0/Download"):
         if os.path.isdir(p):
-            return os.path.join(p, "letsconn")
+            return os.path.join(p, "netsub")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 
 def local_ip():
@@ -305,11 +305,11 @@ def local_ip():
         return "127.0.0.1"
 
 def b64sub(text):
-    """标准 VPN 订阅 base64（无换行）"""
+    """标准 VPN 配置源 base64（无换行）"""
     return base64.b64encode(text.encode("utf-8")).decode("ascii")
 
 # ══════════════════════════════════════════════════════════════
-#  订阅服务器
+#  分发服务器
 # ══════════════════════════════════════════════════════════════
 class _SubHandler(BaseHTTPRequestHandler):
     nodes_txt = b""
@@ -319,7 +319,7 @@ class _SubHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0].rstrip("/") or "/"
-        if p in ("/", "/sub", "/sub.txt", "/clash"):
+        if p in ("/", "/sub", "/sub.txt", "/plain"):
             body = self.nodes_txt
             ctype = "text/plain; charset=utf-8"
         elif p == "/sub64":
@@ -344,14 +344,14 @@ def serve(port=8787, blob=""):
     srv = HTTPServer(("0.0.0.0", port), _SubHandler)
     log("")
     log("═" * 58)
-    log("  订阅服务器已启动")
+    log("  分发服务器已启动")
     log("═" * 58)
-    log("  手机/同 WiFi 设备订阅地址：")
+    log("  手机/同 WiFi 设备分发地址：")
     log("    http://%s:%d/sub        (明文链接)" % (ip, port))
-    log("    http://%s:%d/sub64      (base64 订阅)" % (ip, port))
+    log("    http://%s:%d/sub64      (base64 配置源)" % (ip, port))
     log("")
-    log("  v2rayNG / NekoBox: 订阅设置 → 地址填上面的 /sub64")
-    log("  Shadowrocket: 同上，或直接粘贴 nodes.txt")
+    log("  客户端A / 客户端B: 配置源 → 地址填上面的 /sub64")
+    log("  客户端C: 同上，或直接粘贴 nodes.txt")
     log("  按 Ctrl+C 停止")
     log("═" * 58)
     log("")
@@ -398,7 +398,7 @@ def main():
         pass
 
     log("[*] 输出目录: %s" % outdir)
-    c = LetsConn(mirror=o["mirror"], device_id=o["device"] or new_device_id())
+    c = NetSub(mirror=o["mirror"], device_id=o["device"] or new_device_id())
     log("[*] deviceId: %s" % c.device_id)
 
     # ── 1. init ──
@@ -471,11 +471,11 @@ def main():
             rr, _ = c.rpc("allocate", {"area": str(code)})
             if isinstance(rr, dict) and rr.get("result") == 200:
                 n = rr["data"]; n["name"] = nm
-                u = c.vless(n, name="%s#%d" % (nm, k + 1) if o["exe"] > 1 else nm)
+                u = c.proxy(n, name="%s#%d" % (nm, k + 1) if o["exe"] > 1 else nm)
                 if u in seen:
                     continue
                 seen.add(u)
-                nodes.append({"area": code, "name": nm, "node": n, "vless": u})
+                nodes.append({"area": code, "name": nm, "node": n, "proxy": u})
                 got += 1
                 log("    [%2d/%2d] %-9s %s" % (idx, len(al), code, u))
             else:
@@ -487,10 +487,10 @@ def main():
         time.sleep(0.3)
 
     if not nodes:
-        log("[!] 没抽到任何节点"); return 1
+        log("[!] 没抽到任何条目"); return 1
 
     # ── 6. 输出 ──
-    txt = "\n".join(n["vless"] for n in nodes) + "\n"
+    txt = "\n".join(n["proxy"] for n in nodes) + "\n"
     p_txt = os.path.join(outdir, "nodes.txt")
     p_b64 = os.path.join(outdir, "sub_base64.txt")
     p_json = os.path.join(outdir, "nodes.json")
@@ -505,7 +505,7 @@ def main():
 
     log("")
     log("═" * 58)
-    log("  ✅ 完成：%d 个节点" % len(nodes))
+    log("  ✅ 完成：%d 个条目" % len(nodes))
     log("═" * 58)
     log("  %s" % p_txt)
     log("  %s" % p_b64)
@@ -519,8 +519,8 @@ def main():
         serve(o["port"], txt)
     else:
         log("")
-        log("  ▸ 手机同 WiFi 想直接订阅？加 --serve 参数重跑，")
-        log("    然后在 v2rayNG「订阅设置」里填提示的地址。")
+        log("  ▸ 手机同 WiFi 想直接配置源？加 --serve 参数重跑，")
+        log("    然后在 客户端A「配置源」里填提示的地址。")
         log("")
     return 0
 
